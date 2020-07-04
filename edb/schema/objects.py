@@ -151,12 +151,15 @@ def get_known_type_id(
 
 class ComparisonContext:
 
+    renames: Dict[str, str]
+
     def __init__(
         self,
         *,
         related_schemas: bool = False,
     ) -> None:
         self.related_schemas = related_schemas
+        self.renames = {}
 
 
 # derived from ProtoField for validation
@@ -1143,8 +1146,12 @@ class Object(s_abc.Object, s_abc.ObjectContainer, metaclass=ObjectMeta):
         if ours is not None and theirs is not None:
             if type(ours) is not type(theirs):
                 similarity /= 1.4
-            elif ours.get_name(our_schema) != theirs.get_name(their_schema):
-                similarity /= 1.2
+            else:
+                our_name = ours.get_name(our_schema)
+                our_name = context.renames.get(our_name, our_name)
+                their_name = theirs.get_name(their_schema)
+                if our_name != their_name:
+                    similarity /= 1.2
         elif ours is not None or theirs is not None:
             # one is None but not both
             similarity /= 1.2
@@ -1380,6 +1387,11 @@ class Object(s_abc.Object, s_abc.ObjectContainer, metaclass=ObjectMeta):
                                            new_schema=new_schema))
 
             for fn, f in fields.items():
+                if fn == 'name':
+                    # The change of name is handled by an explicit
+                    # rename op above.
+                    continue
+
                 oldattr_v = old.get_explicit_field_value(old_schema, fn, None)
                 newattr_v = new.get_explicit_field_value(new_schema, fn, None)
 
@@ -1479,12 +1491,18 @@ class Object(s_abc.Object, s_abc.ObjectContainer, metaclass=ObjectMeta):
     ) -> sd.RenameObject[Object_T]:
         from . import delta as sd
 
-        rename_class = sd.ObjectCommandMeta.get_command_class_or_die(
-            sd.RenameObject, type(obj))
+        old_name = obj.get_name(old_schema)
 
-        return rename_class(classname=obj.get_name(old_schema),
-                            new_name=new_name,
-                            metaclass=type(obj))
+        rename_op = obj.init_delta_command(
+            old_schema,
+            sd.RenameObject,
+            new_name=new_name,
+        )
+
+        assert isinstance(rename_op, sd.RenameObject)
+
+        rename_op.set_attribute_value('name', new_name, orig_value=old_name)
+        return rename_op
 
     def dump(self, schema: s_schema.Schema) -> str:
         return (
@@ -1830,7 +1848,9 @@ class ObjectCollection(
         compcoef: float,
     ) -> float:
         if ours is not None:
-            our_names = ours.names(our_schema)
+            our_names = tuple(
+                context.renames.get(n, n) for n in ours.names(our_schema)
+            )
         else:
             our_names = cls._container()
 
@@ -2465,8 +2485,11 @@ class InheritingObject(SubclassableObject):
         rebase = sd.ObjectCommandMeta.get_command_class(
             s_inh.RebaseInheritingObject, type(self))
 
-        old_base_names = self.get_base_names(self_schema)
-        new_base_names = other.get_base_names(other_schema)
+        old_base_names = tuple(
+            context.renames.get(n, n)
+            for n in self.get_bases(self_schema).names(self_schema)
+        )
+        new_base_names = other.get_bases(other_schema).names(other_schema)
 
         if old_base_names != new_base_names and rebase is not None:
             removed, added = s_inh.delta_bases(
