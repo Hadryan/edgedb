@@ -638,6 +638,21 @@ class Command(struct.MixedStruct, metaclass=CommandMeta):
         return modaliases
 
     @classmethod
+    def _ignorenames_from_ast(
+        cls,
+        schema: s_schema.Schema,
+        astnode: qlast.DDLOperation,
+        context: CommandContext,
+    ) -> Tuple[str]:
+        ignorenames = set()
+        if isinstance(astnode, qlast.DDLCommand):
+            for alias in astnode.aliases:
+                if isinstance(alias, qlast.AliasedExpr):
+                    ignorenames |= alias.alias
+
+        return tuple(sorted(ignorenames))
+
+    @classmethod
     def _cmd_tree_from_ast(
         cls,
         schema: s_schema.Schema,
@@ -750,10 +765,12 @@ class CommandContextToken(Generic[Command_T]):
         op: Command_T,
         *,
         modaliases: Optional[Mapping[Optional[str], str]] = None,
+        ignorenames: Sequence[str] = tuple(),
     ) -> None:
         self.original_schema = schema
         self.op = op
         self.modaliases = modaliases if modaliases is not None else {}
+        self.ignorenames = ignorenames
         self.inheritance_merge = None
         self.inheritance_refdicts = None
         self.mark_derived = None
@@ -790,6 +807,7 @@ class CommandContext:
         *,
         schema: Optional[s_schema.Schema] = None,
         modaliases: Optional[Mapping[Optional[str], str]] = None,
+        ignorenames: Sequence[str] = tuple(),
         declarative: bool = False,
         stdmode: bool = False,
         testmode: bool = False,
@@ -806,6 +824,7 @@ class CommandContext:
         self.declarative = declarative
         self.schema = schema
         self._modaliases = modaliases if modaliases is not None else {}
+        self._ignorenames = ignorenames
         self.stdmode = stdmode
         self.testmode = testmode
         self.descriptive_mode = descriptive_mode
@@ -823,6 +842,14 @@ class CommandContext:
         maps = [t.modaliases for t in reversed(self.stack)]
         maps.append(self._modaliases)
         return collections.ChainMap(*maps)
+
+    @property
+    def ignorenames(self) -> Tuple[str]:
+        ign = set()
+        for ctx in reversed(self.stack):
+            ign.update(ctx.ignorenames)
+        ign.update(self._ignorenames)
+        return tuple(sorted(ign))
 
     @property
     def inheritance_merge(self) -> Optional[bool]:
@@ -1670,8 +1697,10 @@ class ObjectCommandContext(CommandContextToken[ObjectCommand[so.Object_T]]):
         scls: so.Object_T,
         *,
         modaliases: Optional[Mapping[Optional[str], str]] = None,
+        ignorenames: Sequence[str] = tuple(),
     ) -> None:
-        super().__init__(schema, op, modaliases=modaliases)
+        super().__init__(
+            schema, op, modaliases=modaliases, ignorenames=ignorenames)
         self.scls = scls
 
 
@@ -2425,6 +2454,7 @@ class AlterSpecialObjectProperty(Command):
                 astnode.value,
                 schema,
                 context.modaliases,
+                context.ignorenames,
                 orig_text=orig_text,
             )
         elif field.name == 'required' and not new_value:
@@ -2721,6 +2751,7 @@ def compile_ddl(
     context_class = cmdcls.get_context_class()
     if context_class is not None:
         modaliases = cmdcls._modaliases_from_ast(schema, astnode, context)
+        ignorenames = cmdcls._ignorenames_from_ast(schema, astnode, context)
         ctxcls = cast(
             Type[ObjectCommandContext[so.Object]],
             context_class,
@@ -2730,6 +2761,7 @@ def compile_ddl(
             op=cast(ObjectCommand[so.Object], _dummy_command),
             scls=_dummy_object,
             modaliases=modaliases,
+            ignorenames=ignorenames,
         )
         with context(ctx):
             cmd = cmdcls._cmd_tree_from_ast(schema, astnode, context)

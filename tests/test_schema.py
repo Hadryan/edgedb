@@ -25,7 +25,6 @@ import re
 from edb import errors
 
 from edb.common import markup
-from edb.testbase import lang as tb
 
 from edb.edgeql import compiler as qlcompiler
 from edb.edgeql import parser as qlparser
@@ -34,6 +33,9 @@ from edb.edgeql import qltypes
 from edb.schema import ddl as s_ddl
 from edb.schema import links as s_links
 from edb.schema import objtypes as s_objtypes
+
+from edb.testbase import lang as tb
+from edb.tools import test
 
 if TYPE_CHECKING:
     from edb.schema import schema as s_schema
@@ -4151,7 +4153,7 @@ class TestDescribe(tb.BaseSchemaLoadTest):
                     SELECT (
                        ((name)[5:] IF (name LIKE 'std::%') ELSE
                        ((name)[9:] IF (name LIKE 'default::%') ELSE
-                        re_replace('(.+?)::(.+$)', r'\1__\2', name)))
+                        std::re_replace('(.+?)::(.+$)', r'\1__\2', name)))
                       ++ '_Type'
                     )
                 )
@@ -4216,12 +4218,7 @@ class TestDescribe(tb.BaseSchemaLoadTest):
 
             """
             CREATE ABSTRACT CONSTRAINT test::my_one_of(one_of: array<anytype>){
-                SET orig_expr := 'contains(one_of, __subject__)';
-                USING (WITH
-                    MODULE test
-                SELECT
-                    contains(one_of, __subject__)
-                );
+                USING (std::contains(one_of, __subject__));
             };
             """
         )
@@ -4397,13 +4394,7 @@ class TestDescribe(tb.BaseSchemaLoadTest):
 
             '''
             abstract type test::HasImage {
-                index on (WITH
-                    MODULE test
-                SELECT
-                    __subject__.image
-                ) {
-                    orig_expr := '__subject__.image';
-                };
+                index on (__subject__.image);
                 required single property image -> std::str;
             };
             ''',
@@ -4413,13 +4404,7 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             '''
             CREATE ABSTRACT TYPE test::HasImage {
                 CREATE REQUIRED SINGLE PROPERTY image -> std::str;
-                CREATE INDEX ON (WITH
-                    MODULE test
-                SELECT
-                    __subject__.image
-                ) {
-                    SET orig_expr := '__subject__.image';
-                };
+                CREATE INDEX ON (__subject__.image);
             };
             '''
         )
@@ -4472,12 +4457,7 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             '''
             CREATE ABSTRACT CONSTRAINT test::my_one_of(one_of: array<anytype>)
             {
-                SET orig_expr := 'contains(one_of, __subject__)';
-                USING (WITH
-                    MODULE test
-                SELECT
-                    contains(one_of, __subject__)
-                );
+                USING (std::contains(one_of, __subject__));
             };
             ''',
 
@@ -4488,21 +4468,10 @@ class TestDescribe(tb.BaseSchemaLoadTest):
                 optional single link translated_label
                 extending test::translated_label
                         -> test::Label {
-                    constraint std::exclusive on (WITH
-                        MODULE test
-                    SELECT
-                        __subject__@prop1
-                    ) {
-                        orig_subjectexpr := '__subject__@prop1';
-                    };
-                    constraint std::exclusive on (WITH
-                        MODULE test
-                    SELECT
+                    constraint std::exclusive on (__subject__@prop1);
+                    constraint std::exclusive on (
                         (__subject__@source, __subject__@lang)
-                    ) {
-                        orig_subjectexpr :=
-                            '(__subject__@source, __subject__@lang)';
-                    };
+                    );
                 };
             };
             ''',
@@ -4565,10 +4534,9 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             'DESCRIBE OBJECT std::len_value AS SDL',
 
             '''
-            abstract constraint std::len_value on (len(<std::str>__subject__))
+            abstract constraint std::len_value on (std::len(<std::str>__subject__))
             {
                 errmessage := 'invalid {__subject__}';
-                orig_subjectexpr := 'len(<std::str>__subject__)';
             };
             ''',
 
@@ -4637,15 +4605,12 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             CREATE TYPE test::Foo {
                 CREATE OPTIONAL SINGLE PROPERTY name -> std::str;
             };
-            CREATE ALIAS test::Bar :=
-                (WITH
-                    MODULE test
-                SELECT
-                    Foo {
-                        name,
-                        calc := 1
-                    }
-                );
+            CREATE ALIAS test::Bar := (
+                SELECT test::Foo {
+                    name,
+                    calc := 1
+                }
+            );
             """
         )
 
@@ -4669,10 +4634,8 @@ class TestDescribe(tb.BaseSchemaLoadTest):
                 CREATE OPTIONAL SINGLE PROPERTY name -> std::str;
             };
             CREATE ALIAS test::Bar {
-                USING (WITH
-                    MODULE test
-                SELECT
-                    Foo {
+                USING (
+                    SELECT test::Foo {
                         name,
                         calc := 1
                     }
@@ -4691,12 +4654,9 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             'DESCRIBE MODULE test',
 
             """
-            CREATE ALIAS test::scalar_alias :=
-                (WITH
-                    MODULE test
-                SELECT
-                    {1, 2, 3}
-                );
+            CREATE ALIAS test::scalar_alias := (
+                {1, 2, 3}
+            );
             """
         )
 
@@ -4710,14 +4670,41 @@ class TestDescribe(tb.BaseSchemaLoadTest):
             'DESCRIBE MODULE test',
 
             """
-            CREATE ALIAS test::array_alias :=
-                ([1, 2, 3]);
-            CREATE ALIAS test::tuple_alias :=
-                (WITH
-                    MODULE test
-                SELECT
-                    (1, 2, 3)
-                );
+            CREATE ALIAS test::array_alias := (
+                [1, 2, 3]
+            );
+            CREATE ALIAS test::tuple_alias := (
+                (1, 2, 3)
+            );
+            """
+        )
+
+    def test_describe_alias_05(self):
+        self._assert_describe(
+            r"""
+            type Foo {
+                property name -> str;
+            };
+
+            alias Bar := (
+                # Test what happens to the default module declared here
+                WITH MODULE test
+                SELECT Foo {name, calc := 1}
+            );
+            """,
+
+            'DESCRIBE MODULE test',
+
+            """
+            CREATE TYPE test::Foo {
+                CREATE OPTIONAL SINGLE PROPERTY name -> std::str;
+            };
+            CREATE ALIAS test::Bar := (
+                SELECT test::Foo {
+                    name,
+                    calc := 1
+                }
+            );
             """
         )
 
@@ -4747,21 +4734,11 @@ class TestDescribe(tb.BaseSchemaLoadTest):
                     CREATE ANNOTATION std::title := 'compprop';
                 };
                 CREATE OPTIONAL SINGLE LINK annotated_link {
-                    USING (WITH
-                        MODULE test
-                    SELECT
-                        Foo
-                    LIMIT
-                        1
-                    );
+                    USING (SELECT test::Foo LIMIT 1);
                     CREATE ANNOTATION std::title := 'complink';
                 };
-                CREATE OPTIONAL SINGLE LINK complink := (WITH
-                    MODULE test
-                SELECT
-                    Foo
-                LIMIT
-                    1
+                CREATE OPTIONAL SINGLE LINK complink := (
+                    SELECT test::Foo LIMIT 1
                 );
                 CREATE REQUIRED SINGLE PROPERTY compprop := ('foo');
             };
@@ -4794,23 +4771,44 @@ class TestDescribe(tb.BaseSchemaLoadTest):
                     CREATE ANNOTATION std::title := 'compprop';
                 };
                 CREATE OPTIONAL SINGLE LINK annotated_link {
-                    USING (WITH
-                        MODULE test
-                    SELECT
-                        Foo
-                    LIMIT
-                        1
-                    );
+                    USING (SELECT test::Foo LIMIT 1);
                     CREATE ANNOTATION std::title := 'complink';
                 };
-                CREATE OPTIONAL SINGLE LINK complink := (WITH
-                    MODULE test
-                SELECT
-                    Foo
-                LIMIT
-                    1
+                CREATE OPTIONAL SINGLE LINK complink := (
+                    SELECT test::Foo LIMIT 1
                 );
                 CREATE REQUIRED SINGLE PROPERTY compprop := ('foo');
+            };
+            """
+        )
+
+    @test.xfail('''
+        The edgeql/tracer.py seems to have an issue resolving the
+        alias 'x' in the expression.
+    ''')
+    def test_describe_computable_03(self):
+        self._assert_describe(
+            r"""
+            type Foo {
+                property name -> str;
+                property comp := (
+                    WITH x := count(Object)
+                    SELECT .name ++ <str>x
+                )
+            };
+            """,
+
+            'DESCRIBE MODULE test',
+
+            """
+            CREATE TYPE test::Foo {
+                CREATE OPTIONAL SINGLE PROPERTY name -> std::str;
+                CREATE OPTIONAL SINGLE PROPERTY comp := (WITH
+                    x :=
+                        std::count(std::Object)
+                SELECT
+                    (.name ++ <std::str>x)
+                );
             };
             """
         )

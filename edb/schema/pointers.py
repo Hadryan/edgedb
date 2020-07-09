@@ -815,6 +815,7 @@ class PointerCommandOrFragment(
         source_name = parent_ctx.op.classname
 
         source = schema.get(source_name, type=s_objtypes.ObjectType)
+
         expression = s_expr.Expression.compiled(
             s_expr.Expression.from_ast(expr, schema, context.modaliases),
             schema=schema,
@@ -1065,6 +1066,8 @@ class PointerCommand(
 
         This may be called in the context of either Create or Alter.
         """
+        from edb.edgeql.compiler import normalization as qlnorm
+
         if astnode.is_required is not None:
             self.set_attribute_value('required', astnode.is_required)
 
@@ -1106,9 +1109,10 @@ class PointerCommand(
             else:
                 # computable
                 target_ref = ComputableRef(
-                    s_expr.imprint_expr_context(
+                    qlnorm.normalize(
                         target_expr,
-                        context.modaliases,
+                        schema=schema,
+                        modaliases=context.modaliases
                     )
                 )
         else:

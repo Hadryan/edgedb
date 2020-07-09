@@ -524,6 +524,26 @@ class ConstraintCommand(
         else:
             return id_fields
 
+    @classmethod
+    def _ignorenames_from_ast(
+        cls,
+        schema: s_schema.Schema,
+        astnode: qlast.DDLOperation,
+        context: sd.CommandContext,
+    ) -> Tuple[str]:
+        ignorenames = set(
+            super(ConstraintCommand, cls)._ignorenames_from_ast(
+                schema, astnode, context
+            )
+        )
+        # Set up the constraint parameters as part of names to be
+        # ignored in expression normalization.
+        if isinstance(astnode, (qlast.CreateConstraint,
+                                qlast.AlterConstraint)):
+            ignorenames |= {param.name for param in astnode.params}
+
+        return tuple(sorted(ignorenames))
+
 
 class CreateConstraint(
     ConstraintCommand,
@@ -934,6 +954,7 @@ class CreateConstraint(
                 astnode.subjectexpr,
                 schema,
                 context.modaliases,
+                context.ignorenames,
                 orig_text=orig_text,
             )
 
